@@ -1,0 +1,2 @@
+# This file keeps the logs/ directory in Git.
+# Actual .jsonl log files are excluded via .gitignore.
