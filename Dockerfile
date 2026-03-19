@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-ENV PYTHONPATH=/app
+ENV PYTHONPATH=/app/gold_trading_backend
 
 COPY gold_trading_backend/ gold_trading_backend/
 
