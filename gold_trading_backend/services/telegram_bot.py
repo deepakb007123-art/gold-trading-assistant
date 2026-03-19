@@ -120,15 +120,11 @@ class TelegramBot:
         }
         
         try:
-            import httpx # Localize to avoid global startup crashes
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(self.base_url, json=payload)
                 response.raise_for_status()
                 logger.info("Successfully sent Telegram alert.")
                 return True
-        except Exception as e:
-            logger.error(f"URGENT: Failed to send Telegram alert: {e}")
-            return False
         except Exception as e:
             logger.error(f"Failed to send Telegram alert: {e}")
             return False
