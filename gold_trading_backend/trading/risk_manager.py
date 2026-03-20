@@ -1,6 +1,6 @@
 from typing import Dict
 from models.signal import WebhookPayload
-from core.logger import logger
+from core.logger import logged 
 from core.config import settings
 from trading.session_manager import session_manager
 
