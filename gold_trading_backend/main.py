@@ -1,9 +1,9 @@
-from trading.market_memory import market_memory
-from trading.entry_engine import entry_engine
 from fastapi import FastAPI, BackgroundTasks, status
 from models.signal import WebhookPayload, TradeAnalysis, SMCConditions
 from core.logger import logger
 
+from trading.market_memory import market_memory
+from trading.entry_engine import entry_engine
 from trading.session_manager import session_manager
 from trading.bias_engine import bias_engine
 from trading.market_structure import market_structure
@@ -54,6 +54,18 @@ async def process_signal(payload: WebhookPayload):
             return
 
         # -------------------------
+        # 🧠 MARKET MEMORY (PDH/PDL AUTO)
+        # -------------------------
+        market_memory.update(payload.price)
+
+        levels = market_memory.get_levels()
+
+        payload.extra = payload.extra or {}
+        payload.extra.update(levels)
+
+        logger.info(f"[{signal_id}] PDH={levels.get('pdh')} | PDL={levels.get('pdl')}")
+
+        # -------------------------
         # PERFORMANCE TRACKING
         # -------------------------
         try:
@@ -90,12 +102,30 @@ async def process_signal(payload: WebhookPayload):
             await reject_trade("Opposite BOS", signal_id)
             return
 
+        # -------------------------
+        # LIQUIDITY + STRATEGY
+        # -------------------------
         liquidity = liquidity_map.detect_liquidity(payload)
-        strategy = strategy_engine.analyze_smc_conditions(payload, structure, liquidity)
+
+        strategy = strategy_engine.analyze_smc_conditions(
+            payload, structure, liquidity
+        )
+
         smc: SMCConditions = strategy["smc_conditions"]
 
         # -------------------------
-        # SOFT FILTERS (NO HARD REJECTION)
+        # ENTRY ENGINE (FIXED)
+        # -------------------------
+        entry_price, entry_type = entry_engine.get_entry(
+            payload, smc, structure, liquidity
+        )
+
+        if entry_price is None:
+            await reject_trade("Fake breakout detected", signal_id)
+            return
+
+        # -------------------------
+        # SOFT PENALTIES
         # -------------------------
         penalty = 0
 
@@ -146,14 +176,11 @@ async def process_signal(payload: WebhookPayload):
             modifiers
         )
 
-        # -------------------------
-        # STRATEGY SOFT FILTER
-        # -------------------------
         if rank == "LOW":
             penalty -= 10
 
         # -------------------------
-        # POSITION SIZING (SIMPLE & EFFECTIVE)
+        # POSITION SIZING
         # -------------------------
         size = 1.0
 
@@ -165,18 +192,12 @@ async def process_signal(payload: WebhookPayload):
             size = 0.5
 
         # -------------------------
-        # BUILD FINAL ANALYSIS
+        # FINAL ANALYSIS OBJECT
         # -------------------------
         analysis = TradeAnalysis(
             symbol=payload.symbol,
             action=payload.action,
-            entry_price, entry_type = entry_engine.get_entry(
-    payload, smc, structure, liquidity
-)
-
-if entry_price is None:
-    await reject_trade("Fake breakout detected", signal_id)
-    return
+            entry_price=entry_price,
             sl_price=risk["sl_price"],
             tp_price=risk["tp_price"],
             tp2_price=risk.get("tp2_price"),
@@ -193,7 +214,7 @@ if entry_price is None:
         analysis.validate_trade()
 
         # -------------------------
-        # FINAL EXECUTION
+        # EXECUTION
         # -------------------------
         if analysis.is_valid:
 
@@ -203,7 +224,9 @@ if entry_price is None:
 
             performance_tracker.register_trade(analysis)
 
-            logger.info(f"[{signal_id}] ✅ TRADE SENT | Score: {score} | {quality}")
+            logger.info(
+                f"[{signal_id}] ✅ TRADE SENT | Score: {score} | {quality} | Entry: {entry_type}"
+            )
 
         else:
             await reject_trade(analysis.invalidation_reason, signal_id)
