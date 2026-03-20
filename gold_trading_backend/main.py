@@ -1,3 +1,4 @@
+from trading.market_memory import market_memory
 from trading.entry_engine import entry_engine
 from fastapi import FastAPI, BackgroundTasks, status
 from models.signal import WebhookPayload, TradeAnalysis, SMCConditions
