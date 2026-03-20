@@ -1,7 +1,6 @@
 from fastapi import FastAPI, BackgroundTasks, status
 from models.signal import WebhookPayload, TradeAnalysis, SMCConditions
 from core.logger import logger
-from core.config import settings
 
 from trading.session_manager import session_manager
 from trading.bias_engine import bias_engine
@@ -11,21 +10,22 @@ from trading.strategy_engine import strategy_engine
 from trading.risk_manager import risk_manager
 from trading.scoring_engine import scoring_engine
 from trading.performance_tracker import performance_tracker
-from trading.position_manager import position_manager
-from core.decision_engine import decision_engine
 
+from core.decision_engine import decision_engine
 from services.news_filter import news_filter
 from services.telegram_bot import telegram_bot
 
 from datetime import datetime
 import uuid
 
-app = FastAPI(title="Gold Trading Assistant FIXED", version="4.0")
+app = FastAPI(title="Gold Trading Assistant FINAL", version="5.0")
 
 SIGNAL_STATE = {"last_signal_time": None}
 
 
-# ✅ GLOBAL REJECTION HANDLER
+# -------------------------
+# REJECTION HANDLER
+# -------------------------
 async def reject_trade(reason: str, signal_id: str):
     logger.warning(f"[{signal_id}] ❌ {reason}")
     try:
@@ -34,7 +34,9 @@ async def reject_trade(reason: str, signal_id: str):
         pass
 
 
-# ✅ MAIN ENGINE
+# -------------------------
+# MAIN PROCESS ENGINE
+# -------------------------
 async def process_signal(payload: WebhookPayload):
 
     signal_id = str(uuid.uuid4())[:8]
@@ -42,25 +44,32 @@ async def process_signal(payload: WebhookPayload):
     try:
         logger.info(f"[{signal_id}] Incoming: {payload.dict()}")
 
-        # ✅ Payload safety
+        # -------------------------
+        # BASIC VALIDATION
+        # -------------------------
         if not payload.symbol or not payload.price:
             await reject_trade("Invalid payload", signal_id)
             return
 
-        # ✅ Safe performance tracker
+        # -------------------------
+        # PERFORMANCE TRACKING
+        # -------------------------
         try:
-            closed = performance_tracker.update_market_price(payload.price)
+            performance_tracker.update_market_price(payload.price)
         except Exception as e:
             logger.error(f"[{signal_id}] Tracker error: {e}")
-            closed = []
 
         modifiers = performance_tracker.get_adaptive_modifiers()
 
-        # ✅ Session
+        # -------------------------
+        # SESSION
+        # -------------------------
         sessions, session_desc = session_manager.get_current_session()
         session_behavior = session_manager.get_session_behavior(sessions, modifiers)
 
-        # ✅ Cooldown
+        # -------------------------
+        # COOLDOWN CONTROL
+        # -------------------------
         now = datetime.utcnow()
         last = SIGNAL_STATE["last_signal_time"]
         cooldown = session_behavior.get("cooldown_minutes", 5) * 60
@@ -69,7 +78,9 @@ async def process_signal(payload: WebhookPayload):
             await reject_trade("Cooldown active", signal_id)
             return
 
-        # ✅ Bias + Structure
+        # -------------------------
+        # MARKET ANALYSIS
+        # -------------------------
         bias = bias_engine.detect_bias(payload)
         structure = market_structure.analyze_structure(payload)
 
@@ -77,27 +88,39 @@ async def process_signal(payload: WebhookPayload):
             await reject_trade("Opposite BOS", signal_id)
             return
 
-        # ✅ Liquidity + Strategy
         liquidity = liquidity_map.detect_liquidity(payload)
         strategy = strategy_engine.analyze_smc_conditions(payload, structure, liquidity)
         smc: SMCConditions = strategy["smc_conditions"]
 
-        if not smc.displacement:
-            await reject_trade("No displacement", signal_id)
-            return
+        # -------------------------
+        # SOFT FILTERS (NO HARD REJECTION)
+        # -------------------------
+        penalty = 0
 
-        # ✅ Risk
+        if not smc.displacement:
+            penalty -= 10
+
+        if not smc.liquidity_sweep:
+            penalty -= 5
+
+        # -------------------------
+        # RISK MANAGEMENT
+        # -------------------------
         risk = risk_manager.calculate_risk_parameters(payload, liquidity)
 
-        if risk["rr_ratio"] < 1.5:
-            await reject_trade("RR too low", signal_id)
+        if risk["rr_ratio"] <= 0:
+            await reject_trade("Invalid RR", signal_id)
             return
 
-        # ✅ News
+        # -------------------------
+        # NEWS FILTER
+        # -------------------------
         news_clear, news_reason = news_filter.check_news_window()
 
-        # ✅ Scoring
-        base, sm, sess, conf, safe, rank, _ = scoring_engine.generate_raw_modifiers(
+        # -------------------------
+        # SCORING ENGINE
+        # -------------------------
+        base, sm, sess, conf, safe, rank, reasons = scoring_engine.generate_raw_modifiers(
             structure["confidence"],
             liquidity["confidence"],
             strategy["confidence"],
@@ -106,25 +129,42 @@ async def process_signal(payload: WebhookPayload):
             structure["htf_alignment"],
             session_behavior,
             adaptive_modifiers=modifiers,
-            strategies_used=strategy["strategies_used"]
+            strategies_used=strategy.get("strategies_used", [])
         )
 
         score, trace = decision_engine.normalize_score(
-            base, sm, sess, 0, conf, safe
+            base + penalty, sm, sess, 0, conf, safe
         )
 
         quality = scoring_engine.determine_quality_tier(
-            score, smc, structure["htf_alignment"], session_behavior, modifiers
+            score,
+            smc,
+            structure["htf_alignment"],
+            session_behavior,
+            modifiers
         )
 
+        # -------------------------
+        # STRATEGY SOFT FILTER
+        # -------------------------
         if rank == "LOW":
-            await reject_trade("Low strategy rank", signal_id)
-            return
+            penalty -= 10
 
-        # ✅ Position
+        # -------------------------
+        # POSITION SIZING (SIMPLE & EFFECTIVE)
+        # -------------------------
         size = 1.0
 
-        # ✅ FINAL OBJECT
+        if quality == "HIGH":
+            size = 1.25
+        elif quality == "MEDIUM":
+            size = 0.75
+        elif quality == "EARLY":
+            size = 0.5
+
+        # -------------------------
+        # BUILD FINAL ANALYSIS
+        # -------------------------
         analysis = TradeAnalysis(
             symbol=payload.symbol,
             action=payload.action,
@@ -138,22 +178,24 @@ async def process_signal(payload: WebhookPayload):
             position_size=size,
             risk_level="MEDIUM",
             session=session_desc,
-            reasoning=["Validated signal"],
+            reasoning=reasons,
             decision_trace={"score_components": trace}
         )
 
         analysis.validate_trade()
 
+        # -------------------------
+        # FINAL EXECUTION
+        # -------------------------
         if analysis.is_valid:
+
             SIGNAL_STATE["last_signal_time"] = datetime.utcnow()
 
             await telegram_bot.send_alert(analysis)
 
-            await telegram_bot.send_message(
-                f"🧠 [{signal_id}] TRACE:\n{trace}"
-            )
-
             performance_tracker.register_trade(analysis)
+
+            logger.info(f"[{signal_id}] ✅ TRADE SENT | Score: {score} | {quality}")
 
         else:
             await reject_trade(analysis.invalidation_reason, signal_id)
@@ -163,20 +205,24 @@ async def process_signal(payload: WebhookPayload):
 
         try:
             await telegram_bot.send_message(
-                f"🔥 SYSTEM ERROR [{signal_id}]\n{str(e)}"
+                f"🔥 ERROR [{signal_id}]\n{str(e)}"
             )
         except:
             pass
 
 
-# ✅ WEBHOOK
+# -------------------------
+# WEBHOOK
+# -------------------------
 @app.post("/webhook", status_code=status.HTTP_202_ACCEPTED)
 async def webhook(payload: WebhookPayload, background_tasks: BackgroundTasks):
     background_tasks.add_task(process_signal, payload)
     return {"status": "accepted"}
 
 
-# ✅ HEALTH
+# -------------------------
+# HEALTH CHECKS
+# -------------------------
 @app.get("/health")
 def health():
     return {"status": "ok"}
