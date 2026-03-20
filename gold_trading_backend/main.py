@@ -169,7 +169,13 @@ async def process_signal(payload: WebhookPayload):
         analysis = TradeAnalysis(
             symbol=payload.symbol,
             action=payload.action,
-            entry_price=payload.price,
+            entry_price, entry_type = entry_engine.get_entry(
+    payload, smc, structure, liquidity
+)
+
+if entry_price is None:
+    await reject_trade("Fake breakout detected", signal_id)
+    return
             sl_price=risk["sl_price"],
             tp_price=risk["tp_price"],
             tp2_price=risk.get("tp2_price"),
