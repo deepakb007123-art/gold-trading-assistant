@@ -1,7 +1,7 @@
 import json
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from ..core.logger import logger
@@ -12,6 +12,17 @@ class PerformanceTracker:
         self.log_file = log_file
         self.trades = self._load_trades()
         self.timeout_minutes = 240
+
+    @staticmethod
+    def _utc_now() -> datetime:
+        return datetime.now(timezone.utc)
+
+    @staticmethod
+    def _parse_trade_timestamp(value: str) -> datetime:
+        dt = datetime.fromisoformat(value)
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
 
     def _load_trades(self) -> List[Dict]:
         if not os.path.exists(self.log_file):
@@ -42,7 +53,7 @@ class PerformanceTracker:
         trade_id = str(uuid.uuid4())[:8]
         record = {
             "id": trade_id,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": self._utc_now().isoformat(),
             "action": analysis.action,
             "quality": analysis.trade_quality,
             "session": analysis.session.split("/")[0].strip(),
@@ -61,7 +72,7 @@ class PerformanceTracker:
         return trade_id
 
     def update_market_price(self, current_price: float) -> List[Dict]:
-        now = datetime.utcnow()
+        now = self._utc_now()
         closed = []
         changed = False
 
@@ -69,7 +80,7 @@ class PerformanceTracker:
             if trade.get("status") != "PENDING":
                 continue
 
-            entry_time = datetime.fromisoformat(trade["timestamp"])
+            entry_time = self._parse_trade_timestamp(trade["timestamp"])
             if (now - entry_time).total_seconds() / 60 > self.timeout_minutes:
                 trade["status"] = "CLOSED"
                 trade["outcome"] = "TIMEOUT"
@@ -151,7 +162,15 @@ class PerformanceTracker:
             peak = max(peak, equity)
 
         drawdown_pct = round(((peak - equity) / peak) * 100, 2) if peak else 0.0
-        equity_state = "NORMAL" if drawdown_pct < 5 else "CAUTION" if drawdown_pct < 10 else "DEFENSIVE" if drawdown_pct < 15 else "CRITICAL"
+        equity_state = (
+            "NORMAL"
+            if drawdown_pct < 5
+            else "CAUTION"
+            if drawdown_pct < 10
+            else "DEFENSIVE"
+            if drawdown_pct < 15
+            else "CRITICAL"
+        )
 
         return {
             "total_signals": total,
