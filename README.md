@@ -1,32 +1,98 @@
-# 🥇 Gold Trading Signal Assistant
+# 🥇 Gold Trading Assistant
 
-A **production-ready FastAPI backend** that receives TradingView webhook alerts for XAUUSD, runs them through a multi-step analysis pipeline, and sends formatted Telegram notifications.
+[![CI](https://github.com/deepakb007123-art/gold-trading-assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/deepakb007123-art/gold-trading-assistant/actions/workflows/ci.yml)
 
-> ⚠️ **This system does NOT execute trades.** It is a signal analysis and notification tool only.
+A modular **XAUUSD (Gold) signal-analysis and decision-support backend** built with Python and FastAPI.
 
----
+The system receives structured market signals through a webhook, enriches them with market context, evaluates SMC-style conditions, applies session/news/risk filters, scores the setup, validates the trade, and sends an analysis notification through Telegram.
 
-## Features
+> ⚠️ **Important:** This project is a signal-analysis and notification system. It does **not** directly place broker orders.
 
-| Feature | Details |
-|---------|---------|
-| **Webhook receiver** | Accepts TradingView POST alerts |
-| **7-step pipeline** | Probability → Market state → Strategy → News filter → Liquidity → R:R → Approval |
-| **Telegram alerts** | Formatted Markdown messages with entry / SL / TP |
-| **Signal logging** | Persistent JSONL log + in-memory ring buffer |
-| **Health endpoints** | `/healthz` and `/status` for uptime monitoring |
-| **Railway-ready** | Dockerfile + Procfile pre-configured |
+## 🎯 Project Objective
 
----
+Instead of forwarding every TradingView alert, the backend attempts to turn an incoming signal into a structured, explainable decision.
 
-## Repository Structure
-
+```text
+TradingView / Upstream Signal
+            ↓
+      Webhook Validation
+            ↓
+       Market Memory
+            ↓
+       Bias + Structure
+            ↓
+        Liquidity Map
+            ↓
+       SMC Strategy
+            ↓
+        Entry Engine
+            ↓
+      Risk / SL / TP / RR
+            ↓
+        News Decision
+            ↓
+      Scoring + Decision
+            ↓
+        Final Validation
+            ↓
+      Telegram Notification
+            ↓
+      Performance Tracking
 ```
+
+## ✨ Core Features
+
+| Module | Purpose |
+|---|---|
+| **FastAPI Webhook** | Receives validated trading signals through `POST /webhook` |
+| **Market Memory** | Maintains previous-day high/low context |
+| **Bias Engine** | Evaluates higher-timeframe directional context |
+| **Market Structure** | Tracks BOS/CHoCH and HTF/LTF alignment |
+| **Liquidity Map** | Builds directional PDH/PDL, EQH/EQL and internal liquidity targets |
+| **SMC Strategy Engine** | Tracks liquidity sweep, OB, FVG, inducement and displacement conditions |
+| **Entry Engine** | Selects a sniper/confirmation/market entry candidate |
+| **Risk Manager** | Calculates structural/volatility-aware SL, TP, TP2 and R:R |
+| **News Filter** | Applies an upstream news decision without inventing calendar events |
+| **Scoring Engine** | Combines structure, liquidity, strategy, confluence and session evidence |
+| **Decision Engine** | Bounds scores and produces an explainable decision trace |
+| **Performance Tracker** | Records accepted signals and derives basic adaptive telemetry |
+| **Telegram Service** | Sends approved signals and rejection/error notifications |
+| **Health Endpoints** | `/health`, `/healthz`, `/status` |
+
+## 🧠 Decision Logic
+
+The current processing path is:
+
+1. Validate the webhook payload.
+2. Update market memory and enrich the signal with previous-day levels.
+3. Determine the active trading session.
+4. Apply a cooldown between signals.
+5. Detect HTF bias and price zone.
+6. Analyse BOS/CHoCH and HTF alignment.
+7. Map directional liquidity.
+8. Evaluate SMC conditions supplied by the upstream signal.
+9. Select an entry model.
+10. Calculate SL/TP/TP2 and R:R around the actual entry.
+11. Apply the configured news decision.
+12. Generate bounded score components.
+13. Determine a quality tier: `HIGH`, `MEDIUM`, `EARLY`, or `LOW`.
+14. Validate the final analysis.
+15. Send the result to Telegram.
+16. Register accepted signals for performance tracking.
+
+The system intentionally avoids random pattern generation. Market-state fields are expected to come from the upstream TradingView/Pine signal or another trusted market-data layer.
+
+## 📦 Repository Structure
+
+```text
 gold-trading-assistant/
+├── .github/
+│   └── workflows/
+│       └── ci.yml
 ├── Dockerfile
 ├── Procfile
-├── requirements.txt
 ├── README.md
+├── requirements.txt
 ├── .env.example
 ├── .gitignore
 ├── logs/
@@ -34,112 +100,194 @@ gold-trading-assistant/
 │   └── test_main.py
 └── gold_trading_backend/
     ├── __init__.py
-    ├── app/
-    │   ├── __init__.py
-    │   └── main.py            ← FastAPI routes
-    └── server/
-        ├── __init__.py
-        ├── analyzer.py         ← Pipeline orchestrator
-        ├── liquidity_predictor.py
-        ├── news_filter.py
-        ├── strategy_engine.py
-        ├── logger.py
-        └── telegram_bot.py
+    ├── main.py
+    ├── test_simulation.py
+    ├── core/
+    │   ├── config.py
+    │   ├── decision_engine.py
+    │   └── logger.py
+    ├── models/
+    │   └── signal.py
+    ├── services/
+    │   ├── news_filter.py
+    │   └── telegram_bot.py
+    ├── tools/
+    │   └── simulate_equity.py
+    └── trading/
+        ├── Entry_engine.py
+        ├── bias_engine.py
+        ├── liquidity_map.py
+        ├── market_memory.py
+        ├── market_structure.py
+        ├── performance_tracker.py
+        ├── position_manager.py
+        ├── risk_manager.py
+        ├── scoring_engine.py
+        ├── session_manager.py
+        └── strategy_engine.py
 ```
 
----
+## 🔌 API
 
-## API Endpoints
+### `POST /webhook`
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/healthz` | Liveness probe |
-| `GET` | `/status` | Module status |
-| `GET` | `/logs?limit=50` | Recent signal logs |
-| `POST` | `/webhook` | Receive TradingView alert |
-
-### POST /webhook — Payload Schema
+The current payload model accepts structured market context. Example:
 
 ```json
 {
-  "symbol":      "XAUUSD",
-  "signal":      "BREAKOUT_BUY",
-  "price":       2345.20,
-  "probability": 82,
-  "strategy":    "breakout",
-  "session":     "london"
+  "symbol": "XAUUSD",
+  "timeframe": "15m",
+  "action": "BUY",
+  "price": 4415.20,
+  "drawdown_pct": 0.0,
+  "strategy_rank": "TOP",
+  "position_size": 1.0,
+  "htf_bias": "BULLISH",
+  "htf_alignment": true,
+  "price_zone": "DISCOUNT",
+  "bos": false,
+  "choch": true,
+  "liquidity_sweep": true,
+  "order_block": true,
+  "fvg_imbalance": true,
+  "inducements": false,
+  "displacement": true,
+  "sweep_confirmed": true,
+  "pdh": 4430.0,
+  "eqh": 4428.0,
+  "news_clear": true,
+  "timestamp": "2026-08-12T08:00:00Z"
 }
 ```
 
-Valid `signal` values (determines BUY/SELL direction): any string containing `BUY` or `SELL`.
+### Required fields
 
-Valid `session` values: `london`, `newyork`, `overlap`, `asian`
+- `symbol`
+- `timeframe`
+- `action` (`BUY` or `SELL`)
+- `price`
 
-Valid `strategy` values: `breakout`, `trend`, `reversal`, `scalp`, `range`, `momentum`
+### Market-context fields
 
-### Example Telegram Alert
+The following can be supplied by the TradingView/Pine layer when available:
 
+- `htf_bias`
+- `htf_alignment`
+- `price_zone`
+- `bos`
+- `choch`
+- `liquidity_sweep`
+- `order_block`
+- `fvg_imbalance`
+- `inducements`
+- `displacement`
+- `sweep_confirmed`
+- `liquidity_approaching`
+- `pdh`, `pdl`, `eqh`, `eql`, `sweep_level`
+
+### Risk fields
+
+- `tv_sl`
+- `tv_tp`
+- `position_size`
+- `drawdown_pct`
+
+### News fields
+
+- `news_clear`
+- `news_reason`
+
+The backend does not fabricate economic-calendar events. An upstream calendar/data service can provide the news decision through these fields.
+
+### Endpoints
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/health` | Basic health response |
+| `GET` | `/healthz` | Liveness check |
+| `GET` | `/status` | Module status |
+| `POST` | `/webhook` | Signal ingestion |
+
+## 📲 Telegram Output
+
+Approved signals contain information such as:
+
+```text
+BUY XAUUSD
+Entry
+SL
+TP1
+RR
+Score
+Quality
+Session
+Bias
+Reasoning
 ```
-🚨 GOLD SIGNAL — XAUUSD
-━━━━━━━━━━━━━━━━━━━━
-🟢 Direction: BUY
-📍 Entry:       2345.20
-🛑 Stop Loss:   2340.20
-🎯 Take Profit: 2355.20
-📊 Probability: 82%
-⚖️ R:R Ratio:   2.0
-🔧 Strategy:    BREAKOUT
-🕐 Session:     LONDON
-━━━━━━━━━━━━━━━━━━━━
-⚠️ Analysis only — no trade executed.
+
+Rejected signals can include the exact reason, for example:
+
+```text
+Cooldown active
+Opposite BOS
+Unconfirmed breakout / no valid entry
+Invalid R:R
+Low trade quality
+HTF/LTF disagreement
+News restriction
 ```
 
----
+## 🛡️ Trade Validation
 
-## Signal Analysis Pipeline
+The final validation layer currently requires:
 
-```
-Incoming Webhook
-      │
-      ▼
-1. Probability ≥ 70%?          → REJECT if not
-      │
-      ▼
-2. Market state valid?          → REJECT if not (scalping/unknown blocked)
-      │
-      ▼
-3. Strategy × session aligned?  → REJECT if not
-      │
-      ▼
-4. No high-impact news?         → REJECT if news event within 30 min
-      │
-      ▼
-5. Calculate Entry / SL / TP
-      │
-      ▼
-6. R:R ratio ≥ 1.5?             → REJECT if not
-      │
-      ▼
-7. APPROVED → Send Telegram alert
-```
+- News decision is clear.
+- Trade quality is not `LOW`.
+- R:R is at least `1.5`.
+- HTF and LTF direction are aligned.
+- BUY stop loss is below entry and target above entry.
+- SELL stop loss is above entry and target below entry.
 
----
+These are decision-support filters, not guarantees of profitability.
 
-## Local Development
+## 🧪 Testing
 
-### 1. Clone the repository
+The repository contains:
+
+- Unit/smoke tests in `tests/test_main.py`
+- A small process simulation in `gold_trading_backend/test_simulation.py`
+- GitHub Actions CI in `.github/workflows/ci.yml`
+
+Run locally:
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/gold-trading-assistant.git
+pip install -r requirements.txt
+pytest -q
+```
+
+## 🛠️ Local Development
+
+### 1. Clone
+
+```bash
+git clone https://github.com/deepakb007123-art/gold-trading-assistant.git
 cd gold-trading-assistant
 ```
 
-### 2. Create virtual environment
+### 2. Create a virtual environment
+
+Windows:
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate        # Linux / macOS
-# .venv\Scripts\activate         # Windows
+.venv\Scripts\activate
+```
+
+Linux/macOS:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
 ```
 
 ### 3. Install dependencies
@@ -148,151 +296,94 @@ source .venv/bin/activate        # Linux / macOS
 pip install -r requirements.txt
 ```
 
-### 4. Configure environment
+### 4. Configure environment variables
+
+```bash
+copy .env.example .env
+```
+
+Linux/macOS:
 
 ```bash
 cp .env.example .env
-# Edit .env and fill in TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
 ```
 
-### 5. Run the server
+Set Telegram credentials and other environment values in `.env`.
+
+### 5. Run the API
 
 ```bash
-uvicorn gold_trading_backend.app.main:app --reload --port 8000
+uvicorn gold_trading_backend.main:app --reload --port 8000
 ```
 
-Open http://localhost:8000/healthz to verify it's running.
+Verify:
 
-### 6. Run tests
+```text
+http://localhost:8000/healthz
+```
+
+## 🚀 Docker / Deployment
+
+The repository includes a Dockerfile and Procfile for cloud deployment.
+
+Build locally:
 
 ```bash
-pip install pytest httpx
-pytest tests/ -v
+docker build -t gold-trading-assistant .
 ```
 
----
-
-## Railway Deployment
-
-### Step 1 — Push to GitHub
+Run locally:
 
 ```bash
-git init
-git add .
-git commit -m "Initial commit — Gold Trading Signal Assistant"
-git remote add origin https://github.com/YOUR_USERNAME/gold-trading-assistant.git
-git push -u origin main
+docker run --rm -p 8000:8000 --env-file .env gold-trading-assistant
 ```
 
-### Step 2 — Create Railway project
+The application binds to `0.0.0.0` and honours the platform `PORT` environment variable.
 
-1. Go to [railway.app](https://railway.app) and log in.
-2. Click **New Project** → **Deploy from GitHub repo**.
-3. Select your `gold-trading-assistant` repository.
-4. Railway will auto-detect the `Dockerfile`.
+A hosted deployment can expose:
 
-### Step 3 — Set environment variables
-
-In Railway dashboard → your service → **Variables**, add:
-
-| Variable | Value |
-|----------|-------|
-| `TELEGRAM_BOT_TOKEN` | Your bot token from @BotFather |
-| `TELEGRAM_CHAT_ID` | Your chat/channel ID |
-| `NEWS_FILTER_ENABLED` | `true` |
-| `NEWS_BLACKOUT_MINUTES` | `30` |
-
-> Railway automatically sets `PORT`. The Dockerfile uses `${PORT:-8000}` so no changes needed.
-
-### Step 4 — Generate a public URL
-
-In Railway dashboard → your service → **Settings** → **Networking** → click **Generate Domain**.
-
-Your webhook URL will be: `https://YOUR-APP.railway.app/webhook`
-
-### Step 5 — Health check (optional but recommended)
-
-In Railway → **Settings** → **Health Check Path**, enter `/healthz`.
-
----
-
-## TradingView Webhook Setup
-
-### Step 1 — Create an alert in TradingView
-
-1. Open your XAUUSD chart.
-2. Click the **Alerts** clock icon → **Create Alert**.
-3. Set your trigger condition (e.g. EMA crossover, RSI level, custom Pine Script).
-
-### Step 2 — Configure the webhook
-
-In the **Notifications** tab of the alert dialog:
-- ✅ Enable **Webhook URL**
-- Enter: `https://YOUR-APP.railway.app/webhook`
-
-### Step 3 — Set the alert message (JSON body)
-
-Paste this into the **Message** field (TradingView will POST this as the request body):
-
-```json
-{
-  "symbol":      "{{ticker}}",
-  "signal":      "BREAKOUT_BUY",
-  "price":       {{close}},
-  "probability": 82,
-  "strategy":    "breakout",
-  "session":     "london"
-}
+```text
+https://YOUR-DOMAIN/webhook
+https://YOUR-DOMAIN/healthz
 ```
 
-> TradingView supports dynamic placeholders: `{{ticker}}`, `{{close}}`, `{{time}}`, etc.
-> Adjust `signal`, `probability`, `strategy`, and `session` to match your alert's context.
+for TradingView delivery and service-health monitoring.
 
-### Step 4 — Save and test
+## 🔐 Security
 
-After saving the alert, you can send a test ping from TradingView.
-Check Railway logs to confirm the signal was received and processed.
+Never commit secrets to GitHub.
 
----
+Keep credentials such as:
 
-## Telegram Bot Setup
+```text
+TELEGRAM_BOT_TOKEN
+TELEGRAM_CHAT_ID
+```
 
-1. Message `@BotFather` on Telegram → `/newbot` → follow prompts → copy the **token**.
-2. Add your bot to your target channel/group and make it an **admin**.
-3. Get your **chat ID**:
-   - For a private chat: message `@userinfobot`.
-   - For a channel: use `https://api.telegram.org/bot<TOKEN>/getUpdates` after sending a message.
-4. Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in Railway variables.
+inside environment variables or a local `.env` file excluded from Git.
 
----
+Before publishing or sharing screenshots, verify that no bot tokens, passwords, broker credentials, private URLs or personal access tokens appear in the repository, logs or images.
 
-## Strategy × Session Rules
+## 📈 Future Work
 
-| Strategy | Allowed Sessions |
-|----------|-----------------|
-| `breakout` | london, newyork, overlap |
-| `trend` | london, newyork, overlap, asian |
-| `reversal` | london, newyork |
-| `scalp` | overlap only |
-| `range` | asian only |
-| `momentum` | london, newyork, overlap |
+- Connect to a real economic calendar/news source.
+- Add OHLCV-backed structure/OB/FVG detection instead of relying on upstream flags.
+- Add integration tests for the complete webhook pipeline.
+- Add persistent database storage for signals and performance.
+- Add dashboard integration.
+- Add backtesting and historical evaluation.
+- Add observability/metrics for production monitoring.
 
----
+## ⚠️ Disclaimer
 
-## Configuration Reference
+This project is for **educational, research and decision-support purposes**. It does not guarantee profitable trading and does not directly execute broker orders.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `TELEGRAM_BOT_TOKEN` | — | Required for alerts |
-| `TELEGRAM_CHAT_ID` | — | Required for alerts |
-| `NEWS_FILTER_ENABLED` | `true` | Set `false` to bypass news filter |
-| `NEWS_BLACKOUT_MINUTES` | `30` | Minutes around news events to suppress |
-| `LOG_DIR` | `logs` | Directory for JSONL signal logs |
-| `LOG_MAX_MEMORY` | `500` | Max signals held in memory |
-| `PORT` | `8000` | Set automatically by Railway |
+Financial markets involve substantial risk. Validate the system in controlled environments and apply appropriate risk management before using market data for real decisions.
 
----
+## 👨‍💻 Tech Stack
 
-## License
+**Python · FastAPI · Pydantic · TradingView Webhooks · Telegram Bot API · Docker · GitHub Actions · Modular trading-analysis engines**
+
+## 📄 License
 
 MIT
