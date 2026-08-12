@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 from fastapi import BackgroundTasks, FastAPI, status
@@ -24,6 +24,11 @@ app = FastAPI(title="Gold Trading Assistant", version="6.0")
 SIGNAL_STATE = {"last_signal_time": None}
 
 
+def _utc_now() -> datetime:
+    """Return the current UTC time as a timezone-aware datetime."""
+    return datetime.now(timezone.utc)
+
+
 async def reject_trade(reason: str, signal_id: str) -> None:
     logger.warning("[%s] REJECTED: %s", signal_id, reason)
     try:
@@ -33,12 +38,15 @@ async def reject_trade(reason: str, signal_id: str) -> None:
 
 
 def _parse_timestamp(timestamp: str | None) -> datetime | None:
+    """Parse an ISO-8601 timestamp and normalize it to timezone-aware UTC."""
     if not timestamp:
         return None
     try:
         value = timestamp.replace("Z", "+00:00")
         dt = datetime.fromisoformat(value)
-        return dt.replace(tzinfo=None) if dt.tzinfo else dt
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
     except ValueError:
         return None
 
@@ -53,7 +61,7 @@ async def process_signal(payload: WebhookPayload) -> dict:
         levels = market_memory.get_levels()
         payload.extra.update({k: v for k, v in levels.items() if v is not None})
 
-        now = datetime.utcnow()
+        now = _utc_now()
         last = SIGNAL_STATE["last_signal_time"]
 
         event_time = _parse_timestamp(payload.timestamp) or now
