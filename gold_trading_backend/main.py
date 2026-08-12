@@ -1,8 +1,9 @@
 from datetime import datetime, timezone
 import uuid
 
-from fastapi import BackgroundTasks, FastAPI, status
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, status
 
+from .core.config import settings
 from .core.decision_engine import decision_engine
 from .core.logger import logger
 from .models.signal import TradeAnalysis, WebhookPayload
@@ -27,6 +28,13 @@ SIGNAL_STATE = {"last_signal_time": None}
 def _utc_now() -> datetime:
     """Return the current UTC time as a timezone-aware datetime."""
     return datetime.now(timezone.utc)
+
+
+def _verify_webhook_secret(provided_secret: str | None) -> None:
+    """Require the configured shared secret when WEBHOOK_SECRET is enabled."""
+    expected = settings.WEBHOOK_SECRET.strip()
+    if expected and provided_secret != expected:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook secret")
 
 
 async def reject_trade(reason: str, signal_id: str) -> None:
@@ -213,7 +221,12 @@ async def process_signal(payload: WebhookPayload) -> dict:
 
 
 @app.post("/webhook", status_code=status.HTTP_202_ACCEPTED)
-async def webhook(payload: WebhookPayload, background_tasks: BackgroundTasks):
+async def webhook(
+    payload: WebhookPayload,
+    background_tasks: BackgroundTasks,
+    x_webhook_secret: str | None = Header(default=None, alias="X-Webhook-Secret"),
+):
+    _verify_webhook_secret(x_webhook_secret)
     background_tasks.add_task(process_signal, payload)
     return {"status": "accepted"}
 
@@ -241,5 +254,6 @@ def status_endpoint():
             "news_filter": True,
             "scoring_engine": True,
             "telegram": bool(telegram_bot.token and telegram_bot.chat_id),
+            "webhook_auth": bool(settings.WEBHOOK_SECRET),
         },
     }
