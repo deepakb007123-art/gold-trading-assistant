@@ -1,115 +1,124 @@
-"""
-Basic smoke tests for the Gold Trading Signal Assistant.
+import asyncio
 
-Run with:  pytest tests/ -v
-"""
-
-import pytest
 from fastapi.testclient import TestClient
 
-from gold_trading_backend.app.main import app
-from gold_trading_backend.server.analyzer import SignalAnalyzer
-from gold_trading_backend.server.liquidity_predictor import LiquidityPredictor
-from gold_trading_backend.server.strategy_engine import StrategyEngine
+from gold_trading_backend.main import app, process_signal
+from gold_trading_backend.models.signal import SMCConditions, WebhookPayload
+from gold_trading_backend.trading.Entry_engine import EntryEngine
+from gold_trading_backend.trading.liquidity_map import LiquidityMap
+from gold_trading_backend.trading.risk_manager import RiskManager
+
 
 client = TestClient(app)
 
-SAMPLE_PAYLOAD = {
-    "symbol": "XAUUSD",
-    "signal": "BREAKOUT_BUY",
-    "price": 2345.20,
-    "probability": 82,
-    "strategy": "breakout",
-    "session": "london",
-}
 
+def sample_payload(**overrides):
+    data = {
+        "symbol": "XAUUSD",
+        "timeframe": "15m",
+        "action": "BUY",
+        "price": 4415.20,
+        "drawdown_pct": 0.0,
+        "strategy_rank": "TOP",
+        "position_size": 1.0,
+        "htf_bias": "BULLISH",
+        "htf_alignment": True,
+        "price_zone": "DISCOUNT",
+        "bos": False,
+        "choch": True,
+        "liquidity_sweep": True,
+        "order_block": True,
+        "fvg_imbalance": True,
+        "inducements": False,
+        "displacement": True,
+        "sweep_confirmed": True,
+        "liquidity_approaching": True,
+        "news_clear": True,
+        "pdh": 4430.0,
+        "eqh": 4428.0,
+        "timestamp": "2026-08-12T08:00:00Z",
+    }
+    data.update(overrides)
+    return WebhookPayload(**data)
 
-# ── Health endpoints ──────────────────────────────────────────────────────────
 
 def test_healthz():
-    resp = client.get("/healthz")
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "ok"
+    response = client.get("/healthz")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_health():
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
 
 
 def test_status():
-    resp = client.get("/status")
-    assert resp.status_code == 200
-    data = resp.json()
+    response = client.get("/status")
+    assert response.status_code == 200
+    data = response.json()
     assert data["status"] == "operational"
     assert "modules" in data
+    assert data["modules"]["risk_manager"] is True
 
 
-def test_logs_empty():
-    resp = client.get("/logs")
-    assert resp.status_code == 200
-    assert "logs" in resp.json()
+def test_invalid_payload_is_rejected_by_pydantic():
+    response = client.post("/webhook", json={"symbol": "XAUUSD"})
+    assert response.status_code == 422
 
 
-# ── Webhook ───────────────────────────────────────────────────────────────────
-
-def test_webhook_valid_signal():
-    resp = client.post("/webhook", json=SAMPLE_PAYLOAD)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "approved" in data
-    assert "analysis" in data
+def test_payload_model_accepts_smc_context():
+    payload = sample_payload()
+    assert payload.action == "BUY"
+    assert payload.liquidity_sweep is True
+    assert payload.order_block is True
 
 
-def test_webhook_low_probability():
-    payload = {**SAMPLE_PAYLOAD, "probability": 50}
-    resp = client.post("/webhook", json=payload)
-    assert resp.status_code == 200
-    assert resp.json()["approved"] is False
+def test_liquidity_map_returns_directional_target():
+    payload = sample_payload()
+    liquidity = LiquidityMap().detect_liquidity(payload)
+    assert liquidity["targets"]
+    assert liquidity["best_target"]["price"] > payload.price
 
 
-def test_webhook_missing_field():
-    resp = client.post("/webhook", json={"symbol": "XAUUSD"})
-    assert resp.status_code == 422  # Unprocessable Entity
+def test_entry_engine_returns_sniper_entry():
+    payload = sample_payload()
+    smc = SMCConditions(
+        liquidity_sweep=True,
+        order_block=True,
+        fvg_imbalance=True,
+        choch=True,
+        displacement=True,
+        sweep_confirmed=True,
+    )
+    structure = {"has_bos": False, "has_choch": True}
+    liquidity = LiquidityMap().detect_liquidity(payload)
+    entry, entry_type = EntryEngine().get_entry(payload, smc, structure, liquidity)
+    assert entry is not None
+    assert entry_type == "Sniper Entry"
+    assert entry < payload.price
 
 
-# ── LiquidityPredictor ────────────────────────────────────────────────────────
-
-def test_liquidity_buy():
-    lp = LiquidityPredictor(sl_buffer=5.0, tp_multiplier=2.0)
-    result = lp.calculate(2345.20, "BUY")
-    assert result["entry"] == 2345.20
-    assert result["stop_loss"] < result["entry"]
-    assert result["take_profit"] > result["entry"]
+def test_risk_manager_generates_valid_levels():
+    payload = sample_payload()
+    liquidity = LiquidityMap().detect_liquidity(payload)
+    risk = RiskManager().calculate_risk_parameters(payload, liquidity, entry_price=4413.0)
+    assert risk["sl_price"] < risk["entry_price"] < risk["tp_price"]
+    assert risk["rr_ratio"] >= 1.5
 
 
-def test_liquidity_sell():
-    lp = LiquidityPredictor(sl_buffer=5.0, tp_multiplier=2.0)
-    result = lp.calculate(2345.20, "SELL")
-    assert result["stop_loss"] > result["entry"]
-    assert result["take_profit"] < result["entry"]
+def test_webhook_returns_accepted():
+    response = client.post("/webhook", json=sample_payload().model_dump())
+    assert response.status_code == 202
+    assert response.json()["status"] == "accepted"
 
 
-# ── StrategyEngine ────────────────────────────────────────────────────────────
+def test_process_signal_rejects_against_htf(monkeypatch):
+    async def fake_send_message(_):
+        return True
 
-def test_strategy_aligned():
-    se = StrategyEngine()
-    assert se.is_aligned("breakout", "BUY", "london") is True
-
-
-def test_strategy_not_aligned():
-    se = StrategyEngine()
-    assert se.is_aligned("scalp", "BUY", "asian") is False
-
-
-# ── Full pipeline ─────────────────────────────────────────────────────────────
-
-def test_analyzer_approves_good_signal():
-    analyzer = SignalAnalyzer()
-    result = analyzer.analyze(SAMPLE_PAYLOAD)
-    assert result["approved"] is True
-    assert result["stop_loss"] is not None
-    assert result["take_profit"] is not None
-    assert result["rr_ratio"] >= 1.5
-
-
-def test_analyzer_rejects_low_probability():
-    analyzer = SignalAnalyzer()
-    result = analyzer.analyze({**SAMPLE_PAYLOAD, "probability": 40})
+    monkeypatch.setattr("gold_trading_backend.main.telegram_bot.send_message", fake_send_message)
+    payload = sample_payload(action="SELL", htf_bias="BULLISH", htf_alignment=False)
+    result = asyncio.run(process_signal(payload))
     assert result["approved"] is False
-    assert "probability" in result["rejection_reason"].lower()
