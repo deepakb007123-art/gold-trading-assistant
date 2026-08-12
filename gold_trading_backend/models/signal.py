@@ -1,95 +1,149 @@
-from pydantic import BaseModel, Field
-from typing import List, Optional, Literal
 from datetime import datetime
+from typing import Any, Dict, List, Literal, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
+
 
 class WebhookPayload(BaseModel):
-    """Payload received from TradingView via Webhook."""
-    symbol: str = Field(..., description="Trading pair symbol (e.g., XAUUSD)")
-    timeframe: str = Field(..., description="Chart timeframe")
+    """Validated market signal received from TradingView or another upstream producer."""
+
+    model_config = ConfigDict(extra="allow")
+
+    symbol: str = Field(..., min_length=1)
+    timeframe: str = Field(..., min_length=1)
     action: Literal["BUY", "SELL"]
-    drawdown_pct: float = Field(0.0, description="Current drawdown percentage")
-    strategy_rank: Literal["TOP", "MID", "LOW", "UNKNOWN"] = Field("UNKNOWN", description="V8 Strategy intelligence rank")
-    price: float = Field(..., description="Current market price at signal generation")
-    position_size: float = Field(default=1.0)
-    # Optional fields from TV that we will validate against our internal engines
-    tv_sl: Optional[float] = None
-    tv_tp: Optional[float] = None
+    price: float = Field(..., gt=0)
+
+    drawdown_pct: float = Field(default=0.0, ge=0.0)
+    strategy_rank: Literal["TOP", "MID", "LOW", "UNKNOWN"] = "UNKNOWN"
+    position_size: float = Field(default=1.0, gt=0)
+
+    # Optional upstream risk levels.
+    tv_sl: Optional[float] = Field(default=None, gt=0)
+    tv_tp: Optional[float] = Field(default=None, gt=0)
     timestamp: Optional[str] = None
 
+    # Optional upstream market context. TradingView/Pine can populate these directly.
+    htf_bias: Literal["BULLISH", "BEARISH", "NEUTRAL"] = "NEUTRAL"
+    htf_alignment: Optional[bool] = None
+    price_zone: Literal["PREMIUM", "DISCOUNT", "EQUILIBRIUM", "UNKNOWN"] = "UNKNOWN"
+    bos: bool = False
+    choch: bool = False
+    liquidity_sweep: bool = False
+    order_block: bool = False
+    fvg_imbalance: bool = False
+    inducements: bool = False
+    displacement: bool = False
+    sweep_confirmed: bool = False
+    liquidity_approaching: bool = False
+
+    # Optional liquidity levels.
+    pdh: Optional[float] = Field(default=None, gt=0)
+    pdl: Optional[float] = Field(default=None, gt=0)
+    eqh: Optional[float] = Field(default=None, gt=0)
+    eql: Optional[float] = Field(default=None, gt=0)
+    sweep_level: Optional[float] = Field(default=None, gt=0)
+
+    # Optional news decision supplied by a trusted upstream calendar integration.
+    news_clear: Optional[bool] = None
+    news_reason: Optional[str] = None
+
+    # Free-form context for future TradingView fields.
+    extra: Dict[str, Any] = Field(default_factory=dict)
+
+
 class SMCConditions(BaseModel):
-    """Track exactly which SMC elements were detected."""
+    """Structured record of the SMC conditions detected for a signal."""
+
     liquidity_sweep: bool = False
     order_block: bool = False
     fvg_imbalance: bool = False
     bos: bool = False
     choch: bool = False
     inducements: bool = False
-    displacement: bool = False  # Track if there was strong momentum after structure break
-    sweep_confirmed: bool = False # Track if sweep had reaction
-    liquidity_approaching: bool = False # Track if price is proactively drawing to a specific pool
+    displacement: bool = False
+    sweep_confirmed: bool = False
+    liquidity_approaching: bool = False
+
 
 class TradeAnalysis(BaseModel):
-    """Comprehensive analysis result after processing through all engines."""
+    """Final explainable analysis result emitted by the decision pipeline."""
+
     symbol: str
     action: Literal["BUY", "SELL"]
     entry_price: float
-    
-    # Target and Risk Output
     sl_price: float
     tp_price: float
     tp2_price: Optional[float] = None
     rr_ratio: float
-    
-    # Meta
+
     confidence_score: float
     trade_quality: str
     position_size: float
     system_state: str = "NORMAL"
     equity_state: str = "NORMAL"
     drawdown_pct: float = 0.0
-    
-    # Analysis Details
+
     htf_alignment: bool
     trend_alignment: Literal["BULLISH", "BEARISH", "NEUTRAL"]
     session: str
     risk_level: Literal["LOW", "NORMAL", "HIGH", "AGGRESSIVE"] = "LOW"
     position_reasoning: str = ""
-    
-    # Explainability Data
+
     smc_conditions: SMCConditions
-    reasoning: List[str]
-    strategies_used: List[str]
+    reasoning: List[str] = Field(default_factory=list)
+    strategies_used: List[str] = Field(default_factory=list)
     bias: str = "NEUTRAL"
     price_zone: str = "UNKNOWN"
     strategy_rank: str = "UNKNOWN"
     decision_trace: Optional[dict] = None
-    
-    # News filter metadata
+
     news_clear: bool
-    news_reason: str = "No critical news windows active."
-    
-    # Signal Validation
+    news_reason: str = "No critical news window active."
+
     is_valid: bool = True
     invalidation_reason: Optional[str] = None
 
     def validate_trade(self) -> None:
-        """Validates the trade and sets rejection flags if constraints are violated."""
+        """Apply final hard validation rules before an alert is sent."""
         if not self.news_clear:
             self.is_valid = False
             self.invalidation_reason = f"Blocked: {self.news_reason}"
             return
-            
+
         if self.trade_quality == "LOW":
             self.is_valid = False
-            self.invalidation_reason = "Blocked: Trade Quality rated LOW."
+            self.invalidation_reason = "Blocked: Trade quality rated LOW."
             return
-            
+
         if self.rr_ratio < 1.5:
             self.is_valid = False
-            self.invalidation_reason = f"Blocked: Insufficient Risk-To-Reward ({self.rr_ratio} < 1.5)."
+            self.invalidation_reason = (
+                f"Blocked: insufficient risk-to-reward ({self.rr_ratio} < 1.5)."
+            )
             return
-            
+
         if not self.htf_alignment:
             self.is_valid = False
-            self.invalidation_reason = "Blocked: LTF contradicts HTF Bias."
+            self.invalidation_reason = "Blocked: lower timeframe contradicts HTF bias."
+            return
+
+        if self.action == "BUY" and not self.tp_price > self.entry_price:
+            self.is_valid = False
+            self.invalidation_reason = "Blocked: BUY target is not above entry."
+            return
+
+        if self.action == "SELL" and not self.tp_price < self.entry_price:
+            self.is_valid = False
+            self.invalidation_reason = "Blocked: SELL target is not below entry."
+            return
+
+        if self.action == "BUY" and not self.sl_price < self.entry_price:
+            self.is_valid = False
+            self.invalidation_reason = "Blocked: BUY stop loss is not below entry."
+            return
+
+        if self.action == "SELL" and not self.sl_price > self.entry_price:
+            self.is_valid = False
+            self.invalidation_reason = "Blocked: SELL stop loss is not above entry."
             return
