@@ -16,13 +16,15 @@ venv/
 env/
 ENV/
 
-# Environment
+# Environment secrets
 .env
 *.env.local
 
-# Logs
+# Runtime logs and performance data
 logs/*.jsonl
 logs/*.log
+performance_log.json
+performance_log.json.tmp
 
 # IDE
 .idea/
