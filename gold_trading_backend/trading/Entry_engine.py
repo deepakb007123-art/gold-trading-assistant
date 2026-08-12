@@ -1,31 +1,23 @@
 class EntryEngine:
+    """Select a candidate entry from the supplied setup context."""
 
     def get_entry(self, payload, smc, structure, liquidity):
-
         price = payload.price
         direction = payload.action
 
-        # ❌ Fake breakout filter
-        if structure.get("bos") and not smc.displacement:
+        # A BOS without displacement is treated as an unconfirmed breakout.
+        if structure.get("has_bos") and not smc.displacement:
             return None, "Fake breakout"
 
-        # 🎯 Sniper entry (best)
         zone = liquidity.get("entry_zone")
-
         if zone:
-            if direction == "BUY":
-                entry = zone.get("low", price)
-            else:
-                entry = zone.get("high", price)
-
+            entry = zone.get("low" if direction == "BUY" else "high", price)
             return round(entry, 2), "Sniper Entry"
 
-        # ⚡ Confirmation entry
         if smc.displacement:
-            return price, "Confirmation Entry"
+            return round(price, 2), "Confirmation Entry"
 
-        # fallback
-        return price, "Market Entry"
+        return round(price, 2), "Market Entry"
 
 
 entry_engine = EntryEngine()
