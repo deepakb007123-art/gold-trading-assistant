@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class MarketMemory:
@@ -13,12 +13,10 @@ class MarketMemory:
         self.prev_day_low = None
 
     def update(self, price: float):
+        today = datetime.now(timezone.utc).date()
 
-        today = datetime.utcnow().date()
-
-        # 🆕 NEW DAY → SHIFT
+        # NEW DAY -> SHIFT
         if self.current_day != today:
-
             if self.day_high is not None:
                 self.prev_day_high = self.day_high
                 self.prev_day_low = self.day_low
@@ -27,7 +25,7 @@ class MarketMemory:
             self.day_high = price
             self.day_low = price
 
-        # 📈 UPDATE CURRENT DAY
+        # UPDATE CURRENT DAY
         else:
             if self.day_high is None or price > self.day_high:
                 self.day_high = price
@@ -36,10 +34,9 @@ class MarketMemory:
                 self.day_low = price
 
     def get_levels(self):
-
         return {
             "pdh": self.prev_day_high,
-            "pdl": self.prev_day_low
+            "pdl": self.prev_day_low,
         }
 
 
