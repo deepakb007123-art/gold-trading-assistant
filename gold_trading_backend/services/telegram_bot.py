@@ -1,144 +1,93 @@
 import httpx
-from models.signal import TradeAnalysis
-from core.config import settings
-from core.logger import logger
+
+from ..core.config import settings
+from ..core.logger import logger
+from ..models.signal import TradeAnalysis
 
 
-MAX_MESSAGE_LENGTH = 4000  # safe buffer
+MAX_MESSAGE_LENGTH = 4000
 
 
 class TelegramBot:
-
     def __init__(self):
         self.token = settings.TELEGRAM_BOT_TOKEN
         self.chat_id = settings.TELEGRAM_CHAT_ID
         self.base_url = f"https://api.telegram.org/bot{self.token}/sendMessage"
 
-    # ✅ SAFE TEXT (prevent HTML crash)
-    def _safe(self, text):
+    @staticmethod
+    def _safe(text) -> str:
         return str(text).replace("<", "").replace(">", "")
 
-    # ✅ TRIM MESSAGE
-    def _trim(self, text: str) -> str:
-        if len(text) > MAX_MESSAGE_LENGTH:
-            return text[:MAX_MESSAGE_LENGTH] + "\n\n... (trimmed)"
-        return text
+    @staticmethod
+    def _trim(text: str) -> str:
+        return text if len(text) <= MAX_MESSAGE_LENGTH else text[:MAX_MESSAGE_LENGTH] + "\n\n... (trimmed)"
 
-    # ✅ RETRY SYSTEM
     async def _send(self, payload: dict) -> bool:
-        for attempt in range(3):
-            try:
-                async with httpx.AsyncClient(timeout=10) as client:
-                    res = await client.post(self.base_url, json=payload)
-
-                    if res.status_code == 200:
-                        logger.info("✅ Telegram sent")
-                        return True
-                    else:
-                        logger.error(f"Telegram error: {res.text}")
-
-            except Exception as e:
-                logger.error(f"Attempt {attempt+1} failed: {e}")
-
-        return False
-
-    # 🚀 MAIN ALERT
-    async def send_alert(self, analysis: TradeAnalysis) -> bool:
-
         if not self.token or not self.chat_id:
             logger.warning("Telegram not configured")
             return False
 
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    response = await client.post(self.base_url, json=payload)
+                if response.status_code == 200:
+                    return True
+                logger.error("Telegram error %s: %s", response.status_code, response.text)
+            except Exception as exc:
+                logger.error("Telegram attempt %s failed: %s", attempt + 1, exc)
+        return False
+
+    async def send_message(self, text: str) -> bool:
+        return await self._send({"chat_id": self.chat_id, "text": self._trim(self._safe(text))})
+
+    async def send_alert(self, analysis: TradeAnalysis) -> bool:
         if analysis.trade_quality == "LOW":
             return False
 
-        try:
-            # SYSTEM STATE
-            system_state = getattr(analysis, "system_state", "NORMAL")
-            equity_state = getattr(analysis, "equity_state", "NORMAL")
+        system_state = analysis.system_state
+        equity_state = analysis.equity_state
+        header = "🧠 SYSTEM: NORMAL"
+        if system_state == "SAFE MODE":
+            header = "🚨 SAFE MODE ACTIVE"
+        elif equity_state in {"DEFENSIVE", "CRITICAL"}:
+            header = f"🛡️ {equity_state}"
 
-            header = "🧠 <b>SYSTEM: NORMAL</b>\n\n"
-            if system_state == "SAFE MODE":
-                header = "🚨 <b>SAFE MODE ACTIVE</b>\n\n"
-            elif equity_state in ["DEFENSIVE", "CRITICAL"]:
-                header = f"🛡️ <b>{equity_state}</b>\n\n"
+        quality_map = {
+            "HIGH": "🔥 HIGH CONFIDENCE",
+            "MEDIUM": "⚠️ MEDIUM SETUP",
+            "EARLY": "⚡ EARLY ENTRY",
+        }
 
-            # QUALITY
-            quality_map = {
-                "HIGH": "🔥 HIGH CONFIDENCE",
-                "MEDIUM": "⚠️ MEDIUM SETUP",
-                "EARLY": "⚡ EARLY ENTRY"
-            }
+        direction = "📈" if analysis.action == "BUY" else "📉"
+        lines = [
+            header,
+            quality_map.get(analysis.trade_quality, "UNKNOWN"),
+            "",
+            f"{direction} {analysis.action} {analysis.symbol}",
+            f"Entry: {analysis.entry_price}",
+            f"SL: {analysis.sl_price}",
+            f"TP1: {analysis.tp_price}",
+            f"RR: {analysis.rr_ratio}R",
+            f"Score: {analysis.confidence_score}%",
+            f"Quality: {analysis.trade_quality}",
+            f"Session: {analysis.session}",
+            f"Bias: {analysis.bias}",
+            "",
+            "Reason:",
+        ]
+        lines.extend(f"• {self._safe(reason)}" for reason in analysis.reasoning[:8])
+        message = self._trim("\n".join(lines))
+        return await self._send({"chat_id": self.chat_id, "text": message})
 
-            quality = analysis.trade_quality
-            quality_text = quality_map.get(quality, "UNKNOWN")
-
-            direction = "📈" if analysis.action == "BUY" else "📉"
-
-            msg = header
-            msg += f"{quality_text}\n\n"
-            msg += f"{direction} <b>{analysis.action} {analysis.symbol}</b>\n\n"
-
-            msg += f"<b>Entry:</b> <code>{analysis.entry_price}</code>\n"
-            msg += f"<b>SL:</b> <code>{analysis.sl_price}</code>\n"
-            msg += f"<b>TP1:</b> <code>{analysis.tp_price}</code>\n"
-
-            if getattr(analysis, "tp2_price", None):
-                msg += f"<b>TP2:</b> <code>{analysis.tp2_price}</code>\n"
-
-            msg += f"<b>RR:</b> <code>{analysis.rr_ratio}R</code>\n\n"
-
-            msg += f"<b>Score:</b> {analysis.confidence_score}%\n"
-            msg += f"<b>Session:</b> {analysis.session}\n\n"
-
-            # REASONS (SAFE)
-            msg += "<b>Reason:</b>\n"
-            for r in analysis.reasoning[:10]:  # limit reasons
-                msg += f"• {self._safe(r)}\n"
-
-            # TRIM MESSAGE
-            msg = self._trim(msg)
-
-            payload = {
-                "chat_id": self.chat_id,
-                "text": msg,
-                "parse_mode": "HTML"
-            }
-
-            sent = await self._send(payload)
-
-            # 🔁 FALLBACK MESSAGE
-            if not sent:
-                fallback = f"⚠️ {analysis.action} {analysis.symbol}\nEntry: {analysis.entry_price}"
-                await self._send({
-                    "chat_id": self.chat_id,
-                    "text": fallback
-                })
-
-            return sent
-
-        except Exception as e:
-            logger.error(f"Telegram critical error: {e}")
-            return False
-
-    # 📊 PERFORMANCE REPORT
     async def send_performance_report(self, metrics: dict) -> bool:
-
-        try:
-            msg = "📊 PERFORMANCE REPORT\n\n"
-            msg += f"Trades: {metrics.get('total_signals', 0)}\n"
-            msg += f"Winrate: {metrics.get('win_rate', 0)}%\n"
-
-            payload = {
-                "chat_id": self.chat_id,
-                "text": msg
-            }
-
-            return await self._send(payload)
-
-        except Exception as e:
-            logger.error(e)
-            return False
+        text = (
+            "📊 PERFORMANCE REPORT\n\n"
+            f"Signals: {metrics.get('total_signals', 0)}\n"
+            f"Win rate: {metrics.get('win_rate', 0)}%\n"
+            f"System state: {metrics.get('system_state', 'NORMAL')}"
+        )
+        return await self.send_message(text)
 
 
 telegram_bot = TelegramBot()
