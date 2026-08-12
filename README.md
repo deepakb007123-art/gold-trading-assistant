@@ -45,6 +45,7 @@ TradingView / Upstream Signal
 | Module | Purpose |
 |---|---|
 | **FastAPI Webhook** | Receives validated trading signals through `POST /webhook` |
+| **Webhook Authentication** | Optional `X-Webhook-Secret` protection for a public deployment |
 | **Market Memory** | Maintains previous-day high/low context |
 | **Bias Engine** | Evaluates higher-timeframe directional context |
 | **Market Structure** | Tracks BOS/CHoCH and HTF/LTF alignment |
@@ -58,12 +59,13 @@ TradingView / Upstream Signal
 | **Performance Tracker** | Records accepted signals and derives basic adaptive telemetry |
 | **Telegram Service** | Sends approved signals and rejection/error notifications |
 | **Health Endpoints** | `/health`, `/healthz`, `/status` |
+| **Smoke Test** | Deterministic script verifies public webhook connectivity without broker execution |
 
 ## 🧠 Decision Logic
 
 The current processing path is:
 
-1. Validate the webhook payload.
+1. Validate the webhook payload and optional shared secret.
 2. Update market memory and enrich the signal with previous-day levels.
 3. Determine the active trading session.
 4. Apply a cooldown between signals.
@@ -95,7 +97,11 @@ gold-trading-assistant/
 ├── requirements.txt
 ├── .env.example
 ├── .gitignore
-├── logs/
+├── scripts/
+│   └── send_test_signal.py
+├── docs/
+│   ├── ARCHITECTURE.md
+│   └── LIVE_TRADING_SETUP.md
 ├── tests/
 │   └── test_main.py
 └── gold_trading_backend/
@@ -207,6 +213,63 @@ The backend does not fabricate economic-calendar events. An upstream calendar/da
 | `GET` | `/healthz` | Liveness check |
 | `GET` | `/status` | Module status |
 | `POST` | `/webhook` | Signal ingestion |
+
+If `WEBHOOK_SECRET` is configured, `/webhook` also requires the `X-Webhook-Secret` header.
+
+## 📡 Live TradingView Integration
+
+The project is ready to be used as a **live signal-analysis service** once the FastAPI application is deployed to a public HTTPS URL.
+
+```text
+TradingView Alert
+       ↓ HTTPS POST
+https://YOUR-DOMAIN/webhook
+       ↓
+FastAPI
+       ↓
+Analysis Pipeline
+       ↓
+Telegram Alert
+```
+
+### Production setup
+
+Configure:
+
+```env
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_CHAT_ID=...
+WEBHOOK_SECRET=...
+NEWS_FILTER_ENABLED=true
+```
+
+Then deploy the FastAPI application using the included `Dockerfile`/`Procfile` and set the TradingView webhook URL to:
+
+```text
+https://YOUR-DOMAIN/webhook
+```
+
+Send the same shared secret as:
+
+```text
+X-Webhook-Secret: <your secret>
+```
+
+The complete deployment procedure is documented in [`docs/LIVE_TRADING_SETUP.md`](docs/LIVE_TRADING_SETUP.md).
+
+### Smoke test
+
+The repository includes a deterministic connectivity test:
+
+```bash
+python scripts/send_test_signal.py https://YOUR-DOMAIN YOUR_WEBHOOK_SECRET
+```
+
+It checks `/healthz`, sends a known payload to `/webhook`, and verifies the HTTP response. It **does not place broker trades**.
+
+### TradingView payload rule
+
+Do not invent market fields in production. `htf_bias`, BOS, CHoCH, liquidity, OB, FVG, displacement and news fields should come from the actual Pine Script/upstream data provider or a trusted market-data integration.
 
 ## 📲 Telegram Output
 
@@ -358,6 +421,7 @@ Keep credentials such as:
 ```text
 TELEGRAM_BOT_TOKEN
 TELEGRAM_CHAT_ID
+WEBHOOK_SECRET
 ```
 
 inside environment variables or a local `.env` file excluded from Git.
