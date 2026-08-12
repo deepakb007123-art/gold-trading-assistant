@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     RISK_PERCENT_PER_TRADE: float = 1.0
     NEWS_FILTER_ENABLED: bool = os.getenv("NEWS_FILTER_ENABLED", "true").lower() in ("true", "1", "yes")
 
+    # Optional shared secret for TradingView/webhook authentication.
+    # Leave empty for local development. Set it in deployment for a protected endpoint.
+    WEBHOOK_SECRET: str = os.getenv("WEBHOOK_SECRET", "")
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 
