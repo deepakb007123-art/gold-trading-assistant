@@ -1,24 +1,28 @@
 import asyncio
-from models.signal import WebhookPayload
-from main import process_signal
-import logging
 
-logging.basicConfig(level=logging.INFO)
+from .main import process_signal
+from .models.signal import WebhookPayload
 
-async def run_simulation():
-    # 1. Provide a standard mock valid payload
+
+def test_signal_simulation_smoke():
     payload = WebhookPayload(
         symbol="XAUUSD",
         timeframe="15m",
         action="BUY",
-        price=2000.50,
-        drawdown_pct=0.0,
-        strategy_rank="TOP"
+        price=4415.20,
+        strategy_rank="TOP",
+        htf_bias="BULLISH",
+        htf_alignment=True,
+        price_zone="DISCOUNT",
+        choch=True,
+        liquidity_sweep=True,
+        order_block=True,
+        fvg_imbalance=True,
+        displacement=True,
+        sweep_confirmed=True,
+        news_clear=True,
+        pdh=4430.0,
     )
 
-    print("--- STARTING SIMULATION ---")
-    await process_signal(payload)
-    print("--- SIMULATION FINISHED ---")
-
-if __name__ == "__main__":
-    asyncio.run(run_simulation())
+    result = asyncio.run(process_signal(payload))
+    assert "approved" in result
